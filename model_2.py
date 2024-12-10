@@ -441,7 +441,8 @@ st.sidebar.markdown(
     }
     </style>
     <div class="reference-text">
-        CFR Title 21 documents as of April 1, 2024, updated annually.
+        CFR Title 21 updated annually on April 1, 
+        data available as of April 1, 2024.
     </div>
     """,
     unsafe_allow_html=True
