@@ -16,8 +16,8 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 from reportlab.lib.units import inch
 from reportlab.lib.styles import ParagraphStyle
 import base64
-import fitz  
-from docx import Document  
+import fitz  # PyMuPDF for extracting text from PDFs
+from docx import Document  # for handling Word documents
 
 # Load environment variables
 load_dotenv()
@@ -36,6 +36,35 @@ with open('document_metadata_with_embeddings.json', 'r') as f:
 
 # Initialize HuggingFace embedding model
 embedding_model = HuggingFaceEmbeddings()
+
+# Function to add the logo in the sidebar
+def add_sidebar_logo(logo_file):
+    with open(logo_file, "rb") as image_file:
+        encoded_image = base64.b64encode(image_file.read()).decode()
+
+    st.sidebar.markdown(
+        f"""
+        <style>
+        /* Style to position the logo in the sidebar */
+        .sidebar-logo-container {{
+            position: relative;
+            width: 100%;
+            padding-bottom: 20px;
+        }}
+        .sidebar-logo-container img {{
+            width: 150px;
+            height: auto;
+        }}
+        </style>
+        <div class="sidebar-logo-container">
+            <img src="data:image/png;base64,{encoded_image}" alt="Sidebar Logo">
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+# Call the function to add the sidebar logo 
+add_sidebar_logo("images/sidebar_logo.png")
 
 # Function to add the logo in the top right corner
 def add_logo(logo_file):
@@ -84,26 +113,53 @@ def generate_question_from_chunk(chunk_text):
 
 # Helper function to evaluate the user's response
 def evaluate_response(user_response, chunk_text):
-    prompt = (
+    # Step 1: Check if the user's response is relevant to the regulatory text
+    relevance_check_prompt = (
+        f"Determine if the following response is relevant to the given regulatory section. If the user's answers shows non attempt with phrases like I dont know or anything related then mark it as relevant\n\n"
         f"Regulatory Section:\n{chunk_text}\n\n"
-        f"Your Response:\n{user_response}\n\n"
-        f"Feedback:\n"
-        f"1. Evaluate whether your response complies with the regulatory section. Focus on key points where your response aligns or does not align with the requirements.\n"
-        f"2. If your response does not fully meet the regulatory requirements, provide specific recommendations on what actions you need to take to achieve compliance. "
-        f"Include detailed suggestions or steps you can follow to mitigate any issues."
+        f"User Response:\n{user_response}\n\n"
+        f"Respond with 'Relevant' if the response is on-topic and addresses the regulatory section, or "
+        f"'Irrelevant' if it does not."
     )
 
-    response = openai.ChatCompletion.create(
+    relevance_response = openai.ChatCompletion.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a bot helping with audit preparation."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": "You are an assistant helping with audit preparation."},
+            {"role": "user", "content": relevance_check_prompt}
         ],
-        max_tokens=800,
+        max_tokens=10,
         n=1
     )
+    relevance = relevance_response['choices'][0]['message']['content'].strip()
 
-    return response['choices'][0]['message']['content'].strip()
+    # Step 2: Provide feedback based on relevance
+    if relevance.lower() == "relevant":
+        # Detailed evaluation if response is relevant
+        prompt = (
+            f"Regulatory Section:\n{chunk_text}\n\n"
+            f"Your Response:\n{user_response}\n\n"
+            f"Feedback:\n"
+            f"1. Evaluate whether your response complies with the regulatory section. Focus on key points where your response aligns or does not align with the requirements.\n"
+            f"2. If your response does not fully meet the regulatory requirements, provide specific recommendations on what actions you need to take to achieve compliance. "
+            f"Include detailed suggestions or steps you can follow to mitigate any issues."
+        )
+
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are an assistant helping with audit preparation."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=800,
+            n=1
+        )
+
+        return response['choices'][0]['message']['content'].strip()
+
+    else:
+        # Feedback if the response is irrelevant
+        return "It seems that your response does not address the regulatory section directly. Please review the content carefully and ensure your response is relevant to the regulatory requirements specified."
 
 # Helper function to generate a final evaluation after the conversation
 def generate_final_evaluation(conversation):
@@ -248,7 +304,7 @@ if 'project_area' not in st.session_state:
 
 # Sidebar for project area input
 with st.sidebar:
-    st.title("Mock Audit")
+    st.title("Audit Readiness")
     st.session_state.project_area = st.text_input("Enter your project area:", value=st.session_state.project_area)
 
     if st.button("Submit"):
@@ -372,3 +428,78 @@ if st.sidebar.button("Download as PDF"):
             file_name=filename,
             mime="application/pdf"
         )
+
+st.sidebar.markdown(
+    """
+    <style>
+    .reference-text {
+        position: fixed;
+        bottom: 10px;
+        left: 10px;
+        font-size: 12px;
+        color: #888888;
+    }
+    </style>
+    <div class="reference-text">
+        CFR Title 21 documents as of April 1, 2024, updated annually.
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# Function to save the current session to a JSON file with versioning
+def save_session_to_json(project_scope, conversation):
+    try:
+        with open("chat_history.json", "r") as file:
+            all_sessions = json.load(file)
+    except FileNotFoundError:
+        all_sessions = {}
+
+    # Determine the version number for the current project scope
+    version = len(all_sessions.get(project_scope, [])) + 1
+    session_data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "version": version,
+        "conversation": conversation
+    }
+    all_sessions.setdefault(project_scope, []).append(session_data)
+
+    # Save updated sessions back to the file
+    with open("chat_history.json", "w") as file:
+        json.dump(all_sessions, file, indent=4)
+
+# Function to load saved sessions from JSON
+def load_saved_sessions():
+    try:
+        with open("chat_history.json", "r") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        return {}
+
+# Load previous sessions at the start
+saved_sessions = load_saved_sessions()
+
+# Display saved sessions in the sidebar with project scope and version
+st.sidebar.title("Previous Sessions")
+for project_scope, sessions in saved_sessions.items():
+    with st.sidebar.expander(project_scope):
+        for session in sessions:
+            session_label = f"{project_scope} v{session['version']} - {session['timestamp']}"
+            if st.sidebar.button(session_label, key=f"{project_scope}_{session['version']}"):
+                # Load the selected session's conversation into the main chat area
+                st.session_state.conversation = session["conversation"]
+                st.session_state.project_area = project_scope
+                st.session_state.end_session = False  
+                st.session_state.show_input_area = False  
+                st.session_state.viewing_previous_session = True  
+                st.rerun()
+
+# Save the session to JSON when ending the audit
+if st.session_state.end_session:
+    save_session_to_json(st.session_state.project_area, st.session_state.conversation)
+
+if st.sidebar.button("Go to Home Page"):
+    # Clear the relevant session state variables to reset to the main page
+    for key in ["conversation", "project_area", "end_session", "questions_asked", "used_chunks", "show_next_question_button", "show_input_area", "ask_more_questions"]:
+        st.session_state.pop(key, None)
+    st.rerun()
